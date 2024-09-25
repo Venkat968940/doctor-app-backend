@@ -1,116 +1,134 @@
-const express = require("express");
-const app = express();
-const cors = require("cors");
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const dotenv = require('dotenv');
 
-
-const uri =  "mongodb+srv://venkatesh:INXHZXwWJps4AzLy@cluster0.vsxlj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
-
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
-
-// Middlewares
-app.use(express.json());
-app.use(cors());
-
-async function startServer() {
-  try {
-
-    await client.connect();
-
-    console.log("Connected to MongoDB!");
-
-    const database = client.db("doc-app"); 
-    const usersCollection = database.collection("users"); 
-
-    
-    app.get("/users", async (req, res) => {
-      try {
-        const userSort = { createdAt: -1, updatedAt: -1 };
-        const users = await usersCollection.find({}).sort(userSort).toArray();
-        console.log(users);
-        res.json(users);
-      } catch (error) {
-        res.status(500).json({ message: "Error fetching users", error });
-      }
-    });
-
-    app.get("/users/:id", async (req, res) => {
-      const id = req.params.id;
-      try {
-        const users = await usersCollection.find({ _id: new ObjectId(id) }).toArray();
-        res.json(users);
-      } catch (error) {
-        res.status(500).json({ message: "Error fetching users", error });
-      }
-    });
-    
-    app.post("/users", async (req, res) => {
-      try {
-        const { email, password } = req.body;
-        const newUser = {
-          email: email,
-          password: password,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        console.log(newUser);
-        const result = await usersCollection.insertOne(newUser);
-        res.json(result);
-      } catch (error) {
-        res.status(500).json({ message: "Error adding user", error });
-      }
-    });
-
-    app.put("/users/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const { email, password } = req.body;
-        const newUser = {
-          email: email,
-          password: password,
-          updatedAt: new Date(),
-        };
-
-        const result = await usersCollection.updateOne({ _id: new ObjectId(id) }, { $set: newUser });
-        if (result.modifiedCount === 1) {
-          res.status(200).json({ message: "Updated Successfully" });
-        } else {
-          res.status(404).json({ message: "User not found" });
-        }
-        //   console.log(usersCollection.updateOne({_id : new ObjectId(id)}, {$set : newUser}))
-      } catch (error) {
-        res.status(500).json({ message: "Error updating user", error });
-      }
-    });
-
-    app.delete("/users/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const result = await usersCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-        if (result.deletedCount === 1) {
-          res.status(200).json({ message: "Deleted Successfully" });
-        } else {
-          res.status(404).json({ message: "User not found" });
-        }
-      } catch (error) {
-        res.status(500).json({ message: "Error deleting user", error });
-      }
-    });
-    
-    app.listen(8000, () => {
-      console.log("Server is running on port 8000");
-    });
-  } catch (error) {
-    console.error("Failed to connect to MongoDB:", error);
-  }
+switch (process.env.NODE_ENV) {
+    case 'production':
+        dotenv.config({ path: './production.env' });
+        break;
+    case 'staging':
+        dotenv.config({ path: './staging.env' });
+        break;
+    case 'development':
+        dotenv.config({ path: './dev.env' });
+        break;
+    default:
+        dotenv.config({ path: './local.env' });
+        break;
 }
 
-startServer();
+
+const express = require('express');
+const app = express();
+const helmet = require('helmet');
+const morgan = require('morgan');
+const userAgent = require('express-useragent');
+const bodyParser = require('body-parser');
+const boom = require('@hapi/boom');
+const requestIp = require('request-ip');
+const logError = require('./system/middleware/log-error');
+const errorHandler = require('./system/error/handler');
+const cors = require('cors');
+// const swaggerSpec = require('./docs');
+const middlewareConfig = require('./system/config/middleware');
+const publicRouters = require('./routers/publicRouter');
+const privateRouters = require('./routers/privateRouter');
+const swaggerUi = require('swagger-ui-express');
+const YAML = require('yamljs');
+const swaggerMerge = require('swagger-merge');
+const path = require('path');
+var admin = require("firebase-admin");
+
+var serviceAccount = require("./firebaseServiceAccountKey.json");
+
+const corsOptions = {
+  origin: ["http://localhost:8080", "http://localhost:5173","http://your-allowed-origin.com"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+  
+app.use(userAgent.express());
+app.use(express.json());
+// app.use(cors(middlewareConfig.cors));
+app.use(helmet());
+app.use(morgan(middlewareConfig.morganRequestFormat));
+app.use(bodyParser.urlencoded({
+    extended: true,
+}));
+// app.use(bodyParser.json());
+app.use(requestIp.mw());
+
+app.get('/', (req, res) => {
+    console.log(`Health is A OK .ENV ${process.env.NODE_ENV}`);
+    res.send({ msg: `Health is A OK .ENV ${process.env.NODE_ENV}` });
+});
+
+// var info = {
+//   version: "1.0.0",
+//   title: "HMS",
+//   description: "all mighty services merged together\n"
+// }
+
+
+
+const appointmentDocument = YAML.load('./api/Appointment/swagger.yaml');
+const userDocument = YAML.load('./api/User/swagger.yaml');
+
+const combinedSwaggerDocument = {
+    openapi: '3.0.0',
+    info: {
+      title: 'HMS',
+      version: '1.0.0',
+      description: 'API documentation for both Appointment and User modules',
+    },
+    servers: [
+      {
+        url: 'http://localhost:8080/api',
+      },
+    ],
+    paths: {
+      ...appointmentDocument.paths,
+      ...userDocument.paths,
+    },
+  };
+  
+
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(combinedSwaggerDocument));
+
+// const swaggerDocument = swaggerMerge.merge([appointmentDocument,userDocument],info,'/api','http://localhost:8080');
+// app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+
+
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+
+publicRouters(app);
+privateRouters(app);
+
+app.use((req, res, next) => {
+    throw boom.notFound('Endpoint Not Found');
+});
+
+// app.use(async (req, res, next) => {
+//   try {
+//     // Example Firebase Admin action to check connection
+//     const user = await admin.auth().getUser("test-uid"); // Replace with actual user UID or task
+//     console.log("Firebase Admin connected, user:", user);
+//     next();
+//   } catch (error) {
+//     console.error("Firebase Admin connection error:", error);
+//     return res.status(500).send("Firebase Admin connection failed.");
+//   }
+// });
+
+app.use(logError);
+app.use(errorHandler.token);
+app.use(errorHandler.validation);
+app.use(errorHandler.all);
+
+module.exports = app;
